@@ -31,7 +31,7 @@ BitMatrix::setRegion(int left, int top, int width, int height)
 	for (int y = top; y < bottom; y++) {
 		size_t offset = y * _width;
 		for (int x = left; x < right; x++) {
-			_bits[offset + x] = SET_V;
+			_bits.get()[offset + x] = SET_V;
 		}
 	}
 }
@@ -53,7 +53,7 @@ BitMatrix::rotate90()
 void
 BitMatrix::rotate180()
 {
-	std::reverse(_bits.begin(), _bits.end());
+    std::reverse(_bits.get(), _bits.get() + _width * _height);
 }
 
 void
@@ -99,8 +99,16 @@ static auto isSet = [](auto v) { return bool(v); };
 bool
 BitMatrix::getTopLeftOnBit(int& left, int& top) const
 {
-	int bitsOffset = (int)std::distance(_bits.begin(), std::find_if(_bits.begin(), _bits.end(), isSet));
-	if (bitsOffset == Size(_bits)) {
+    int bitsOffset = 0;
+    data_t* it = _bits.get();
+    data_t* it_end = _bits.get() + _width * _height;
+    while(++it != it_end){
+        if( isSet(*it) ){
+            bitsOffset = it - _bits.get();
+            break;
+        }
+    }
+    if (bitsOffset == _width * _height) {
 		return false;
 	}
 	top = bitsOffset / _width;
@@ -111,8 +119,17 @@ BitMatrix::getTopLeftOnBit(int& left, int& top) const
 bool
 BitMatrix::getBottomRightOnBit(int& right, int& bottom) const
 {
-	int bitsOffset = Size(_bits) - 1 - (int)std::distance(_bits.rbegin(), std::find_if(_bits.rbegin(), _bits.rend(), isSet));
-	if (bitsOffset < 0) {
+    int bitsOffset = 0;
+    data_t* itr = _bits.get() + _width * _height;
+    data_t* it_endr = _bits.get();
+    while(--itr != it_endr){
+        if( isSet(*itr) ){
+            bitsOffset = itr - it_endr;
+            break;
+        }
+    }
+
+    if (bitsOffset < 0) {
 		return false;
 	}
 

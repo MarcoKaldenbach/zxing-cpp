@@ -31,7 +31,7 @@ class BitMatrix
 	int _height = 0;
 	using data_t = uint8_t;
 
-	std::vector<data_t> _bits;
+    std::shared_ptr<data_t> _bits;
 	// There is nothing wrong to support this but disable to make it explicit since we may copy something very big here.
 	// Use copy() below.
 	BitMatrix(const BitMatrix&) = default;
@@ -40,7 +40,7 @@ class BitMatrix
 	const data_t& get(int i) const
 	{
 #if 1
-		return _bits.at(i);
+        return _bits.get()[i];
 #else
 		return _bits[i];
 #endif
@@ -61,11 +61,22 @@ public:
 #ifdef __GNUC__
 	__attribute__((no_sanitize("signed-integer-overflow")))
 #endif
-	BitMatrix(int width, int height) : _width(width), _height(height), _bits(width * height, UNSET_V)
-	{
-		if (width != 0 && Size(_bits) / width != height)
-			throw std::invalid_argument("invalid size: width * height is too big");
-	}
+    BitMatrix(int width, int height, data_t* data=NULL, bool useDataCopy=true) : _width(width), _height(height)
+    {
+        if( useDataCopy ) {
+            //allocate data for _bits
+            _bits = std::shared_ptr<data_t>(new data_t[width * height],
+                                            std::default_delete<uint8_t[]>());
+
+            if( data ) //check if the data parameters holds actual data, if so copy it
+                memcpy(_bits.get(), data, _width * _height);
+            else
+                std::fill(_bits.get(), _bits.get()+_width*_height, UNSET_V);
+        }
+        else
+            //use original reference to data with an empty deleter
+            _bits = std::shared_ptr<data_t>(data, [](data_t *){});
+    }
 
 	explicit BitMatrix(int dimension) : BitMatrix(dimension, dimension) {} // Construct a square matrix.
 
@@ -74,10 +85,10 @@ public:
 
 	BitMatrix copy() const { return *this; }
 
-	Range<data_t*> row(int y) { return {_bits.data() + y * _width, _bits.data() + (y + 1) * _width}; }
-	Range<const data_t*> row(int y) const { return {_bits.data() + y * _width, _bits.data() + (y + 1) * _width}; }
+	Range<data_t*> row(int y) { return {_bits.get() + y * _width, _bits.get() + (y + 1) * _width}; }
+	Range<const data_t*> row(int y) const { return {_bits.get() + y * _width, _bits.get() + (y + 1) * _width}; }
 
-	Range<StrideIter<const data_t*>> col(int x) const { return {{_bits.data() + x, _width}, {_bits.data() + x + _height * _width, _width}}; }
+	Range<StrideIter<const data_t*>> col(int x) const { return {{_bits.get() + x, _width}, {_bits.get() + x + _height * _width, _width}}; }
 
 	bool get(int x, int y) const { return get(y * _width + x); }
 	void set(int x, int y, bool val = true) { get(y * _width + x) = val * SET_V; }
@@ -96,8 +107,8 @@ public:
 
 	void flipAll()
 	{
-		for (auto& i : _bits)
-			i = !i * SET_V;
+        for (int i = 0; i < _width * _height; i++)
+            _bits.get()[i] = !_bits.get()[i] * SET_V;
 	}
 
 	/**
@@ -127,7 +138,7 @@ public:
 
 	int height() const { return _height; }
 
-	bool empty() const { return _bits.empty(); }
+    bool empty() const { return !_bits || !_bits.get(); }
 
 	friend bool operator==(const BitMatrix& a, const BitMatrix& b)
 	{
