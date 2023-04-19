@@ -15,7 +15,7 @@
 #include <cstdint>
 #include <stdexcept>
 #include <utility>
-#include <vector>
+#include <memory>
 
 namespace ZXing {
 
@@ -88,7 +88,7 @@ public:
 	Range<data_t*> row(int y) { return {_bits.get() + y * _width, _bits.get() + (y + 1) * _width}; }
 	Range<const data_t*> row(int y) const { return {_bits.get() + y * _width, _bits.get() + (y + 1) * _width}; }
 
-	Range<StrideIter<const data_t*>> col(int x) const { return {{_bits.get() + x, _width}, {_bits.get() + x + _height * _width, _width}}; }
+	Range<StrideIter<const data_t*>> col(int x) const { return {{_bits.get() + x + (_height - 1) * _width, -_width}, {_bits.get() + x - _width, -_width}}; }
 
 	bool get(int x, int y) const { return get(y * _width + x); }
 	void set(int x, int y, bool val = true) { get(y * _width + x) = val * SET_V; }

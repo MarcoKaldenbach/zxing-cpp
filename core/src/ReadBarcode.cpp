@@ -9,6 +9,7 @@
 #include "GlobalHistogramBinarizer.h"
 #include "HybridBinarizer.h"
 #include "MultiFormatReader.h"
+#include "Pattern.h"
 #include "ThresholdBinarizer.h"
 
 #include <climits>
@@ -134,6 +135,9 @@ Result ReadBarcode(const ImageView& _iv, const DecodeHints& hints)
 
 Results ReadBarcodes(const ImageView& _iv, const DecodeHints& hints)
 {
+	if (sizeof(PatternType) < 4 && hints.hasFormat(BarcodeFormat::LinearCodes) && (_iv.width() > 0xffff || _iv.height() > 0xffff))
+		throw std::invalid_argument("maximum image width/height is 65535");
+
 	LumImage lum;
 	ImageView iv = SetupLumImageView(_iv, lum, hints);
 	MultiFormatReader reader(hints);
@@ -141,28 +145,42 @@ Results ReadBarcodes(const ImageView& _iv, const DecodeHints& hints)
 	if (hints.isPure())
 		return {reader.read(*CreateBitmap(hints.binarizer(), iv))};
 
+	auto formatsBenefittingFromClosing = BarcodeFormat::Aztec | BarcodeFormat::DataMatrix | BarcodeFormat::QRCode | BarcodeFormat::MicroQRCode;
+	DecodeHints closedHints = hints;
+	std::unique_ptr<MultiFormatReader> closedReader;
+	if (hints.tryDenoise() && hints.hasFormat(formatsBenefittingFromClosing)) {
+		closedHints.setFormats((hints.formats().empty() ? BarcodeFormat::Any : hints.formats()) & formatsBenefittingFromClosing);
+		closedReader = std::make_unique<MultiFormatReader>(closedHints);
+	}
+
 	LumImagePyramid pyramid(iv, hints.downscaleThreshold() * hints.tryDownscale(), hints.downscaleFactor());
 
 	Results results;
 	int maxSymbols = hints.maxNumberOfSymbols() ? hints.maxNumberOfSymbols() : INT_MAX;
 	for (auto&& iv : pyramid.layers) {
 		auto bitmap = CreateBitmap(hints.binarizer(), iv);
-		for (int invert = 0; invert <= static_cast<int>(hints.tryInvert()); ++invert) {
-			if (invert)
-				bitmap->invert();
-			auto rs = reader.readMultiple(*bitmap, maxSymbols);
-			for (auto& r : rs) {
-				if (iv.width() != _iv.width())
-					r.setPosition(Scale(r.position(), _iv.width() / iv.width()));
-				if (!Contains(results, r)) {
-					r.setDecodeHints(hints);
-					r.setIsInverted(bitmap->inverted());
-					results.push_back(std::move(r));
-					--maxSymbols;
+		for (int close = 0; close <= (closedReader ? 1 : 0); ++close) {
+			if (close)
+				bitmap->close();
+
+			// TODO: check if closing after invert would be beneficial
+			for (int invert = 0; invert <= static_cast<int>(hints.tryInvert() && !close); ++invert) {
+				if (invert)
+					bitmap->invert();
+				auto rs = (close ? *closedReader : reader).readMultiple(*bitmap, maxSymbols);
+				for (auto& r : rs) {
+					if (iv.width() != _iv.width())
+						r.setPosition(Scale(r.position(), _iv.width() / iv.width()));
+					if (!Contains(results, r)) {
+						r.setDecodeHints(hints);
+						r.setIsInverted(bitmap->inverted());
+						results.push_back(std::move(r));
+						--maxSymbols;
+					}
 				}
+				if (maxSymbols <= 0)
+					return results;
 			}
-			if (maxSymbols <= 0)
-				return results;
 		}
 	}
 

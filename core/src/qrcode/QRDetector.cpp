@@ -19,8 +19,6 @@
 #include "Quadrilateral.h"
 #include "RegressionLine.h"
 
-#include "BitMatrixIO.h"
-
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -29,13 +27,26 @@
 #include <utility>
 #include <vector>
 
-#ifndef PRINT_DEBUG
+#ifdef PRINT_DEBUG
+#include "BitMatrixIO.h"
+#else
 #define printf(...){}
 #endif
 
 namespace ZXing::QRCode {
 
 constexpr auto PATTERN = FixedPattern<5, 7>{1, 1, 3, 1, 1};
+constexpr bool E2E = true;
+
+PatternView FindPattern(const PatternView& view)
+{
+	return FindLeftGuard<PATTERN.size()>(view, PATTERN.size(), [](const PatternView& view, int spaceInPixel) {
+		// perform a fast plausability test for 1:1:3:1:1 pattern
+		if (view[2] < 2 * std::max(view[0], view[4]) || view[2] < std::max(view[1], view[3]))
+			return 0.f;
+		return IsPattern<E2E>(view, PATTERN, spaceInPixel, 0.5);
+	});
+}
 
 std::vector<ConcentricPattern> FindFinderPatterns(const BitMatrix& image, bool tryHarder)
 {
@@ -52,21 +63,28 @@ std::vector<ConcentricPattern> FindFinderPatterns(const BitMatrix& image, bool t
 		skip = MIN_SKIP;
 
 	std::vector<ConcentricPattern> res;
+	[[maybe_unused]] int N = 0;
+	PatternRow row;
 
 	for (int y = skip - 1; y < height; y += skip) {
-		PatternRow row;
 		GetPatternRow(image, y, row, false);
 		PatternView next = row;
 
-		while (next = FindLeftGuard(next, 0, PATTERN, 0.5), next.isValid()) {
+		while (next = FindPattern(next), next.isValid()) {
 			PointF p(next.pixelsInFront() + next[0] + next[1] + next[2] / 2.0, y + 0.5);
 
 			// make sure p is not 'inside' an already found pattern area
 			if (FindIf(res, [p](const auto& old) { return distance(p, old) < old.size / 2; }) == res.end()) {
-				auto pattern = LocateConcentricPattern(image, PATTERN, p,
-													   Reduce(next) * 3); // 3 for very skewed samples
+				log(p);
+				N++;
+				auto pattern = LocateConcentricPattern<E2E>(image, PATTERN, p,
+															Reduce(next) * 3); // 3 for very skewed samples
 				if (pattern) {
 					log(*pattern, 3);
+					log(*pattern + PointF(.2, 0), 3);
+					log(*pattern - PointF(.2, 0), 3);
+					log(*pattern + PointF(0, .2), 3);
+					log(*pattern - PointF(0, .2), 3);
 					assert(image.get(pattern->x, pattern->y));
 					res.push_back(*pattern);
 				}
@@ -77,6 +95,8 @@ std::vector<ConcentricPattern> FindFinderPatterns(const BitMatrix& image, bool t
 			next.extend();
 		}
 	}
+
+	printf("FPs?  : %d\n", N);
 
 	return res;
 }
@@ -176,34 +196,32 @@ FinderPatternSets GenerateFinderPatternSets(FinderPatterns& patterns)
 	res.reserve(sets.size());
 	for (auto& [d, s] : sets)
 		res.push_back(s);
+
+	printf("FPSets: %d\n", Size(res));
+
 	return res;
 }
 
-static double EstimateModuleSize(const BitMatrix& image, PointF a, PointF b)
+static double EstimateModuleSize(const BitMatrix& image, ConcentricPattern a, ConcentricPattern b)
 {
 	BitMatrixCursorF cur(image, a, b - a);
 	assert(cur.isBlack());
 
-	if (!cur.stepToEdge(3, static_cast<int>(distance(a, b) / 3), true))
+	auto pattern = ReadSymmetricPattern<5>(cur, a.size * 2);
+	if (!pattern || !IsPattern<true>(*pattern, PATTERN))
 		return -1;
 
-	assert(cur.isBlack());
-	cur.turnBack();
-
-
-	auto pattern = cur.readPattern<std::array<int, 5>>();
-
-	return (2 * Reduce(pattern) - pattern[0] - pattern[4]) / 12.0 * length(cur.d);
+	return (2 * Reduce(*pattern) - (*pattern)[0] - (*pattern)[4]) / 12.0 * length(cur.d);
 }
 
 struct DimensionEstimate
 {
 	int dim = 0;
 	double ms = 0;
-	int err = 0;
+	int err = 4;
 };
 
-static DimensionEstimate EstimateDimension(const BitMatrix& image, PointF a, PointF b)
+static DimensionEstimate EstimateDimension(const BitMatrix& image, ConcentricPattern a, ConcentricPattern b)
 {
 	auto ms_a = EstimateModuleSize(image, a, b);
 	auto ms_b = EstimateModuleSize(image, b, a);
@@ -275,7 +293,7 @@ static PerspectiveTransform Mod2Pix(int dimension, PointF brOffset, Quadrilatera
 
 static std::optional<PointF> LocateAlignmentPattern(const BitMatrix& image, int moduleSize, PointF estimate)
 {
-	log(estimate, 2);
+	log(estimate, 4);
 
 	for (auto d : {PointF{0, 0}, {0, -1}, {0, 1}, {-1, 0}, {1, 0}, {-1, -1}, {1, -1}, {1, 1}, {-1, 1},
 #if 1
@@ -290,7 +308,7 @@ static std::optional<PointF> LocateAlignmentPattern(const BitMatrix& image, int 
 			continue;
 
 		if (auto cor1 = CenterOfRing(image, PointI(*cor), moduleSize, 1))
-			if (auto cor2 = CenterOfRing(image, PointI(*cor), moduleSize * 3, 2))
+			if (auto cor2 = CenterOfRing(image, PointI(*cor), moduleSize * 3, -2))
 				if (distance(*cor1, *cor2) < moduleSize / 2) {
 					auto res = (*cor1 + *cor2) / 2;
 					log(res, 3);
@@ -329,10 +347,10 @@ DetectorResult SampleQR(const BitMatrix& image, const FinderPatternSet& fp)
 	auto top  = EstimateDimension(image, fp.tl, fp.tr);
 	auto left = EstimateDimension(image, fp.tl, fp.bl);
 
-	if (!top.dim || !left.dim)
+	if (!top.dim && !left.dim)
 		return {};
 
-	auto best = top.err < left.err ? top : left;
+	auto best = top.err == left.err ? (top.dim > left.dim ? top : left) : (top.err < left.err ? top : left);
 	int dimension = best.dim;
 	int moduleSize = static_cast<int>(best.ms + 1);
 
@@ -430,12 +448,12 @@ DetectorResult SampleQR(const BitMatrix& image, const FinderPatternSet& fp)
 
 				// find the two closest valid alignment pattern pixel positions both horizontally and vertically
 				std::vector<PointF> hori, verti;
-				for (int i = 2; i < 2 * N && Size(hori) < 2; ++i) {
+				for (int i = 2; i < 2 * N + 2 && Size(hori) < 2; ++i) {
 					int xi = x + i / 2 * (i%2 ? 1 : -1);
 					if (0 <= xi && xi <= N && apP(xi, y))
 						hori.push_back(*apP(xi, y));
 				}
-				for (int i = 2; i < 2 * N && Size(verti) < 2; ++i) {
+				for (int i = 2; i < 2 * N + 2 && Size(verti) < 2; ++i) {
 					int yi = y + i / 2 * (i%2 ? 1 : -1);
 					if (0 <= yi && yi <= N && apP(x, yi))
 						verti.push_back(*apP(x, yi));
@@ -455,7 +473,7 @@ DetectorResult SampleQR(const BitMatrix& image, const FinderPatternSet& fp)
 			mod2Pix = Mod2Pix(dimension, PointF(3, 3), {fp.tl, fp.tr, *c, fp.bl});
 
 		// go over the whole set of alignment patters again and fill any remaining gaps by a projection based on an updated mod2Pix
-		// projection. This works if the symbol is flat, wich is a reasonable fall-back assumption
+		// projection. This works if the symbol is flat, wich is a reasonable fall-back assumption.
 		for (int y = 0; y <= N; ++y)
 			for (int x = 0; x <= N; ++x) {
 				if (apP(x, y))
@@ -464,6 +482,12 @@ DetectorResult SampleQR(const BitMatrix& image, const FinderPatternSet& fp)
 				printf("locate failed at %dx%d\n", x, y);
 				apP.set(x, y, projectM2P(x, y));
 			}
+
+#ifdef PRINT_DEBUG
+		for (int y = 0; y <= N; ++y)
+			for (int x = 0; x <= N; ++x)
+				log(*apP(x, y), 2);
+#endif
 
 		// assemble a list of region-of-interests based on the found alignment pattern pixel positions
 		ROIs rois;
@@ -515,7 +539,8 @@ DetectorResult DetectPureQR(const BitMatrix& image)
 	}
 
 	auto fpWidth = Reduce(diagonal);
-	auto dimension = EstimateDimension(image, tl + fpWidth / 2 * PointF(1, 1), tr + fpWidth / 2 * PointF(-1, 1)).dim;
+	auto dimension =
+		EstimateDimension(image, {tl + fpWidth / 2 * PointF(1, 1), fpWidth}, {tr + fpWidth / 2 * PointF(-1, 1), fpWidth}).dim;
 
 	float moduleSize = float(width) / dimension;
 	if (dimension < MIN_MODULES || dimension > MAX_MODULES ||

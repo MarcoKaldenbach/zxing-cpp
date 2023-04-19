@@ -54,10 +54,13 @@ static void PrintUsage(const char* exePath)
 static bool ParseOptions(int argc, char* argv[], DecodeHints& hints, bool& oneLine, bool& bytesOnly,
 						 std::vector<std::string>& filePaths, std::string& outPath)
 {
+	hints.setTryDenoise(true);
+
 	for (int i = 1; i < argc; ++i) {
 		auto is = [&](const char* str) { return strncmp(argv[i], str, strlen(argv[i])) == 0; };
 		if (is("-fast")) {
 			hints.setTryHarder(false);
+			hints.setTryDenoise(false);
 		} else if (is("-norotate")) {
 			hints.setTryRotate(false);
 		} else if (is("-noinvert")) {
@@ -282,7 +285,7 @@ int main(int argc, char* argv[])
 				if (blockSize < 1000 && duration < std::chrono::milliseconds(100))
 					blockSize *= 10;
 			} while (duration < std::chrono::seconds(1));
-			printf("time: %5.1f ms per frame\n", double(std::chrono::duration_cast<std::chrono::milliseconds>(duration).count()) / N);
+			printf("time: %5.2f ms per frame\n", double(std::chrono::duration_cast<std::chrono::milliseconds>(duration).count()) / N);
 		}
 #endif
 	}
